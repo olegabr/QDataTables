@@ -3,7 +3,11 @@
 	class QDataTable_RowClickEvent extends QEvent {
 		const EventName = 'QDataTable_RowClickEvent';
 	}
-
+		
+	class QDataTable_SourceEvent extends QEvent {
+		const EventName = 'QDataTable_SourceEvent';
+	}
+		
 	/**
 	 * @property-read string $Filter
 	 * @property-read QQLimitInfo $LimitInfo
@@ -12,6 +16,16 @@
 	 * @property int $TotalItemCount
 	 * @property boolean $FilterOnReturn
 	 * @property int $FilteringDelay
+	 * @property array $FixedColumns Array of options for fixed column plugin.
+	 * 	Can be the following:
+	 * 		iLeftColumns=>number of left side columns to fix (1 is default)
+	 * 		iRightColumns=>number of right side columns to fix (0 is default)
+	 * 		sLeftWidth=>"fixed"|"relative" the algorithm used to compute width of left column
+	 * 		iLeftWidth=>number representing width of left column. If "fixed", this is a pixel value.
+	 * 			if "relative", this is a percent
+	 * 		sRightWidth=>"fixed"|"relative" the algorithm used to compute width of right column
+	 * 		iRightWidth=>number representing width of right column. If "fixed", this is a pixel value.
+	 * 			if "relative", this is a percent
 	 */
 	class QDataTableBase extends QDataTableGen {
 		protected $objLimitInfo;
@@ -22,14 +36,21 @@
 		protected $intFilteredItemCount = 0;
 		protected $blnFilterOnReturn = false;
 		protected $intFilteringDelay = 0;
+		protected $aFixedColumns = null;
 
 		public function  __construct($objParentObject, $strControlId = null) {
-			parent::__construct($objParentObject, $strControlId);
-			$this->AddJavascriptFile("../../plugins/QDataTables/DataTables-1.9.0/media/js/jquery.dataTables.min.js");
-			$this->AddCssFile("../../plugins/QDataTables/DataTables-1.9.0/media/css/jquery.dataTables.css");
-			$this->AddCssFile("../../plugins/QDataTables/DataTables-1.9.0/media/css/jquery.dataTables_themeroller.css");
-			$this->UseAjax = false;
+			parent::__construct($objParentObject, $strControlId);			
+			$this->AddPluginJavascriptFile("QDataTables", "/QDataTables/DataTables-1.9.0/media/js/jquery.dataTables.min.js");
+			$this->AddPluginCssFile("QDataTables", "/QDataTables/DataTables-1.9.0/media/css/jquery.dataTables.css");
+			$this->AddPluginCssFile("QDataTables", "/QDataTables/DataTables-1.9.0/media/css/jquery.dataTables_themeroller.css");
 			$this->JQueryUI = true;
+			$this->UseWrapper = true;	// required since additional dom elements may be inserted above the table
+			
+			// default to not use ajax
+			$this->UseAjax = false;
+			$this->ServerSide = false;
+			$this->AjaxSource = null;
+			$this->ServerParams = null;
 		}
 
 		public function AddAction($objEvent, $objAction) {
@@ -38,56 +59,92 @@
 			}
 			parent::AddAction($objEvent, $objAction);
 		}
-
-		public function ParsePostData() {
+			
+		public function SetupAjaxBinding() {
+			$this->blnUseAjax = true;
+			$this->ServerSide = true;
+			$this->blnModified = true;
+			$this->AjaxSource = $_SERVER["SCRIPT_NAME"];	// will be ignored
+			
+			
+			$strBody = '';
+			$strJsReturnParam = 'aoData'; // put all of aodata into the action parameter
+			
+			$objAction = new QAjaxControlAction($this, '_GetAjaxData', 'default', null, $strJsReturnParam);
+			
+			// use the ajax action to generate an ajax script for us, but 
+			// since this is an option of the control, we can't actually 'bind' it, so we instead use an
+			// empty action to tie the action to the data binder method name
+			$objEvent = new QAutocomplete_SourceEvent();
+			$objAction->Event = $objEvent;
+			$strBody = "\n" . 'this.data("response",fnCallback);' . "\n";	// fnCallback is a javascript closure, and we have to save it to use it later.
+						//$strBody = 'var aNewData; aoData.each(function(a){aNewData[a["name"]] = a["value"]}); ' . "\n"; // fix quirky format of aoData
+			$strBody .= $objAction->RenderScript($this);
+			$this->ServerData = new QJsClosure($strBody, array('sSource', 'aoData', 'fnCallback', 'oSettings'));
+					
+			$this->RemoveAllActions(QAutocomplete_SourceEvent::EventName);
+			$objAction = new QNoScriptAjaxAction($objAction);
+			parent::AddAction($objEvent, $objAction);
+		}
+		
+		/**
+		 * Respond to a data request and return it in the saved function.
+		 */
+		public function _GetAjaxData($strFormId, $strControlId, $strParameter) {
 			$this->objClauses = array();
 			$this->strFilter = null;
 			$this->intEcho = null;
-			// Check to see if this Control's Value was passed in via the POST data
-			if (array_key_exists('Qform__FormControl', $_POST) && ($_POST['Qform__FormControl'] == $this->strControlId)) {
-				if (isset($_REQUEST['iDisplayStart']) && $_REQUEST['iDisplayLength'] != '-1') {
-					$intOffset = QType::Cast($_REQUEST['iDisplayStart'], QType::Integer);
-					$intMaxRowCount = QType::Cast($_REQUEST['iDisplayLength'], QType::Integer);
-					$this->objLimitInfo = QQ::LimitInfo($intMaxRowCount, $intOffset);
-				}
-				if (isset($_REQUEST['iSortCol_0'])) {
-					$intSortColsCount = QType::Cast($_REQUEST['iSortingCols'], QType::Integer);
-					for ($i = 0; $i < $intSortColsCount; $i++) {
-						$intSortColIdx = QType::Cast($_REQUEST['iSortCol_' . $i], QType::Integer);
-						$blnSortCol = QType::Cast($_REQUEST['bSortable_' . $intSortColIdx], QType::Boolean);
-						if ($blnSortCol) {
-							$objColumn = $this->GetColumn($intSortColIdx);
-							$strSortDir = QType::Cast($_REQUEST['sSortDir_' . $i], QType::String);
-							if (strtolower($strSortDir) == 'desc') {
-								if ($objColumn->ReverseOrderByClause) {
-									$this->objClauses[] = $objColumn->ReverseOrderByClause;
-								}
-							} else {
-								if ($objColumn->OrderByClause) {
-									$this->objClauses[] = $objColumn->OrderByClause;
-								}
+			
+			// Use info sent from datatable control
+			$aParams = array();
+			foreach ($strParameter as $a) {
+				$aParams[$a['name']] = $a['value']; // deal with funky format of aoData
+			}
+			
+			// Set limit info for partial data requests
+			if (isset ($aParams['iDisplayStart']) && 
+					isset ($aParams['iDisplayLength']) && 
+					$aParams['iDisplayLength'] != '-1') {
+				$intOffset = QType::Cast($aParams['iDisplayStart'], QType::Integer);
+				$intMaxRowCount = QType::Cast($aParams['iDisplayLength'], QType::Integer);
+				$this->objLimitInfo = QQ::LimitInfo($intMaxRowCount, $intOffset);
+			}
+			if (isset($aParams['iSortCol_0'])) {
+				$intSortColsCount = QType::Cast($aParams['iSortingCols'], QType::Integer);
+				for ($i = 0; $i < $intSortColsCount; $i++) {
+					$intSortColIdx = QType::Cast($aParams['iSortCol_' . $i], QType::Integer);
+					$blnSortCol = QType::Cast($aParams['bSortable_' . $intSortColIdx], QType::Boolean);
+					if ($blnSortCol) {
+						$objColumn = $this->GetColumn($intSortColIdx);
+						$strSortDir = QType::Cast($aParams['sSortDir_' . $i], QType::String);
+						if (strtolower($strSortDir) == 'desc') {
+							if ($objColumn->ReverseOrderByClause) {
+								$this->objClauses[] = $objColumn->ReverseOrderByClause;
+							}
+						} else {
+							if ($objColumn->OrderByClause) {
+								$this->objClauses[] = $objColumn->OrderByClause;
 							}
 						}
 					}
 				}
-				if (isset($_REQUEST['sSearch'])) {
-					$this->strFilter = QType::Cast($_REQUEST['sSearch'], QType::String);
-				}
-				if (isset($_REQUEST['sEcho'])) {
-					$this->intEcho = QType::Cast($_REQUEST['sEcho'], QType::Integer);
-				}
 			}
-		}
-
-		public function RenderAjax($blnDisplayOutput = true) {
-			if (!is_null($this->intEcho)) {
+			if (isset($aParams['sSearch'])) {
+				$this->strFilter = QType::Cast($aParams['sSearch'], QType::String);
+			}
+			if (isset($aParams['sEcho'])) {
+				$this->intEcho = QType::Cast($aParams['sEcho'], QType::Integer);
+			}
+		
+			// Get the data and send it back to the control
+			if (!is_null($this->intEcho)) {		// Required drawing count, aids in helping control keep track of ajax responses
 				$this->DataBind();
 				$mixDataArray = array();
 				if ($this->objDataSource) {
 					foreach ($this->objDataSource as $objObject) {
 						$row = array();
 						foreach ($this->objColumnArray as $objColumn) {
-							$row[] = $objColumn->FetchCellValueFormatted($objObject);
+							$row[] = $objColumn->FetchCellValue($objObject);
 						}
 						$mixDataArray[] = $row;
 					}
@@ -102,13 +159,22 @@
 					"iTotalDisplayRecords" => $filteredCount,
 					"aaData" => $mixDataArray
 				);
-				while(ob_get_level()) ob_end_clean();
-				echo json_encode($output);
-				exit;
+				
+				$output = JavaScriptHelper::toJsObject($output);
+				$strJS = sprintf('var oTable = $j("#%s").%s();oTable.data("response")(%s);', $this->ControlId, $this->getJqSetupFunction(), $output);
+				QApplication::ExecuteJavaScript($strJS, true);
+				$this->objDataSource = null;
+				$this->intEcho = null;
 			}
-			return parent::RenderAjax($blnDisplayOutput);
 		}
 
+		public function DataBind() {
+			if ($this->blnUseAjax && !$this->intEcho) {
+				return;	// only draw when asked to draw by the datatable
+			}
+			parent::DataBind();
+		}
+		
 		public function GetControlJavaScript() {
 			// add row click handling
 			// use a temporary ajax action with JsReturnParam to generate the ajax script for us
@@ -118,35 +184,32 @@
 			$strJsBody = $action->RenderScript($this);
 
 			$strJS = parent::GetControlJavaScript();
-			$strJS .= ".on('click', 'tbody tr', function () { $strJsBody })";
-			return $strJS;
-		}
-
-		public function DataBind() {
-			if (!array_key_exists('sEcho', $_REQUEST)) {
-				$this->objDataSource = array();
-				return;
+			$strJS .= ".on('click', 'tbody tr', function () { $strJsBody })\n";
+			
+			// Plugin rendering
+			if (!empty ($this->aFixedColumns)) {
+				// do this here in case a subclass sets the variable directly
+				$this->AddPluginJavascriptFile("QDataTables", "/QDataTables/DataTables-1.9.0/media/js/FixedColumns.js");
+				$strJS .= sprintf("{var oTable = jQuery('#%s').%s();\n", $this->getJqControlId(), $this->getJqSetupFunction());
+				$strJS .= 'new FixedColumns( oTable, ' . JavaScriptHelper::toJsObject($this->aFixedColumns) . '); }';
 			}
-			parent::DataBind();
-		}
-
-		public function GetEndScript() {
-			$strJs = parent::GetEndScript();
+			
 			if ($this->blnFilterOnReturn) {
-				$this->AddJavascriptFile("../../plugins/QDataTables/DataTables-1.9.0/plugin-apis/media/js/dataTables.fnFilterOnReturn.js");
+				$this->AddPluginJavascriptFile("QDataTables", "/QDataTables/DataTables-1.9.0/plugin-apis/media/js/dataTables.fnFilterOnReturn.js");
 				$strJs .= sprintf('jQuery("#%s").%s().fnFilterOnReturn(); ',
 						  $this->getJqControlId(),
 						  $this->getJqSetupFunction());
 			}
+
 			if ($this->intFilteringDelay > 0) {
-				$this->AddJavascriptFile("../../plugins/QDataTables/DataTables-1.9.0/plugin-apis/media/js/dataTables.fnSetFilteringDelay.js");
+				$this->AddPluginJavascriptFile("QDataTables", "/QDataTables/DataTables-1.9.0/plugin-apis/media/js/dataTables.fnSetFilteringDelay.js");
 				$strJs .= sprintf('jQuery("#%s").%s().fnSetFilteringDelay(%d); ',
 						  $this->getJqControlId(),
 						  $this->getJqSetupFunction(),
-						  $this->intFilteringDelay
-						  );
+						  $this->intFilteringDelay);
 			}
-			return $strJs;
+			
+			return $strJS;
 		}
 
 		public function __get($strName) {
@@ -158,6 +221,7 @@
 				case "TotalItemCount": return $this->intTotalItemCount;
 				case "FilterOnReturn": return $this->blnFilterOnReturn;
 				case "FilteringDelay": return $this->intFilteringDelay;
+				case "FixedColumns": return $this->aFixedColumns;
 				default:
 					try {
 						return parent::__get($strName);
@@ -169,7 +233,7 @@
 		}
 		public function __set($strName, $mixValue) {
 			$this->blnModified = true;
-
+			
 			switch ($strName) {
 				case "TotalItemCount":
 					try {
@@ -211,25 +275,20 @@
 						throw $objExc;
 					}
 
+				case 'FixedColumns':
+					$this->aFixedColumns = $mixValue;
+					break;
+					
+				case 'DataSource':
+					$this->blnModified = false; // don't modify, since we only do this during drawing, and it will cause multiple redraws
+					return ($this->objDataSource = $mixValue);
+					
 				case 'UseAjax':
-					parent::__set($strName, $mixValue);
-					if ($this->blnUseAjax) {
-						$this->ServerSide = true;
-						$this->ServerMethod = 'post';
-						$this->AjaxSource = $_SERVER["SCRIPT_NAME"];
-						$strJs = "aoData.push({'name': 'Qform__FormId', 'value': jQuery('#Qform__FormId').val()});";
-						$strJs .= "aoData.push({'name': 'Qform__FormState', 'value': jQuery('#Qform__FormState').val()});";
-						$strJs .= "aoData.push({'name': 'Qform__FormCallType', 'value': 'Ajax'});";
-						$strJs .= "aoData.push({'name': 'Qform__FormUpdates', 'value': ''});";
-						$strJs .= "aoData.push({'name': 'Qform__FormCheckableControls', 'value': ''});";
-						$strJs .= "aoData.push({'name': 'Qform__FormEvent', 'value': ''});";
-						$strJs .= sprintf("aoData.push({'name': 'Qform__FormControl', 'value': '%s'});", $this->strControlId);
-						$this->ServerParams = new QJsClosure($strJs, array('aoData'));
-					} else {
-						$this->ServerSide = false;
-						$this->AjaxSource = null;
-						$this->ServerParams = null;
+					$this->blnUseAjax = QType::Cast ($mixValue, QType::Boolean);
+					if ($this->blnUseAjax) {	
+						$this->SetupAjaxBinding();
 					}
+					// TODO: turn off ajax binding if false
 					break;
 
 				default:
