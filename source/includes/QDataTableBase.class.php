@@ -26,6 +26,11 @@
 	 * 		sRightWidth=>"fixed"|"relative" the algorithm used to compute width of right column
 	 * 		iRightWidth=>number representing width of right column. If "fixed", this is a pixel value.
 	 * 			if "relative", this is a percent
+	 * $property boolean $UseMData used in conjuction with ajax rendering and column ids or names, this
+	 *   will cause the mData mechanism to be used to tie particular columns to the data for the column.
+	 *   This is particularly required when using the ColReorder plugin, because the user may reorder the columns
+	 *   and the order of the data will no longer match the order of the columns. MData also lets you pass back
+	 *   additional data that will not be displayed, but that can be used in other ways, like styling or scripts
 	 */
 	class QDataTableBase extends QDataTableGen {
 		protected $objLimitInfo;
@@ -37,6 +42,7 @@
 		protected $blnFilterOnReturn = false;
 		protected $intFilteringDelay = 0;
 		protected $aFixedColumns = null;
+		protected $blnUseMData = false;
 
 		public function  __construct($objParentObject, $strControlId = null) {
 			parent::__construct($objParentObject, $strControlId);			
@@ -88,7 +94,11 @@
 		}
 		
 		/**
-		 * Respond to a data request and return it in the saved function.
+		 * Respond to a data request and return the data object
+		 * Will include row id and row class if those are provided.
+		 * @param string $strFormId
+		 * @param string $strControlId
+		 * @param string $strParameter
 		 */
 		public function _GetAjaxData($strFormId, $strControlId, $strParameter) {
 			$this->objClauses = array();
@@ -141,11 +151,13 @@
 				$this->DataBind();
 				$mixDataArray = array();
 				if ($this->objDataSource) {
+					$rowIndex = 0;
+					if (isset($intOffset)) {
+						$rowIndex = $intOffset;
+					}
 					foreach ($this->objDataSource as $objObject) {
-						$row = array();
-						foreach ($this->objColumnArray as $objColumn) {
-							$row[] = $objColumn->FetchCellValue($objObject);
-						}
+						$row = $this->AjaxGetRowData ($objObject, $rowIndex);
+						$rowIndex++;
 						$mixDataArray[] = $row;
 					}
 				}
@@ -210,6 +222,80 @@
 			}
 			
 			return $strJS;
+		}		
+
+		/**
+		 * Return an array containing the data for a row. The default matches the default datatables, but there
+		 * is a lot of customization you can do.
+		 * @return array
+		 */
+		public function AjaxGetRowData($objObject, $rowIndex) {
+			$row = array();
+			foreach ($this->objColumnArray as $objColumn) {
+				$data = $objColumn->FetchCellValue($objObject);
+				if ($this->blnUseMData) {
+					$strId = $this->GetColumnIdentifier($objColumn);
+					$row[$strId] = $data;
+				} else {
+					$row[] = $data;
+				}
+			}
+			if ($strClass = $this->GetRowClass($objObject, $rowIndex)) {
+				$row['DT_RowClass'] = $strClass;
+			}
+			if ($strId = $this->GetRowId($objObject, $rowIndex)) {
+				$row['DT_RowId'] = $strId;
+			}
+			return $row;
+		}
+		
+		
+		/**
+		 * Return the identifier that should be used to id this column in the mData, aaData, etc.
+		 * If the column is using Id's, then it will use the id of the column. Otherwise, it will
+		 * use a name. Its up to you to make sure each column returns a unique identifier.
+		 * @param QAbstractSimpleTableDataColumn $objColumn
+		 */
+		protected function GetColumnIdentifier(QAbstractSimpleTableDataColumn $objColumn) {
+			$strId = $objColumn->Id;
+			if (empty($strId) || $strId < 0 ) { // negative numeric ids won't work
+				$strId = $objColumn->Name;
+			}
+			return $strId;
+		}
+
+		/**
+		 * Sets up the aoColumns object to match the columns. Not used by default. Call after you initialize,
+		 * but before you draw. You can use this to setup some very elaborate data access mechanisms and column styling.
+		 * @link http://datatables.net/usage/columns
+		 * @link http://datatables.net/blog/Extended_data_source_options_with_DataTables
+		 */
+		protected function SetupColumnDescriptions() {
+			if (empty($this->objColumnArray)) {
+				throw new Exception("Add columns before setting up the column descriptions");
+			}
+			$colParamArray = array();
+			foreach ($this->objColumnArray as $objColumn) {
+				$rowArray = $this->GetColumnDescriptorArray($objColumn);
+				$colParamArray[] = $rowArray;
+			}
+			$this->Columns = $colParamArray;
+		}
+		
+		/**
+		 * Return a key/value array of parameters that specify the behavior of this column. See
+		 * the link for more info. Override to add options to the column descriptor.
+		 * 
+		 * @link http://datatables.net/usage/columns
+		 * @param QAbstractSimpleTableDataColumn $objColumn
+		 */
+		protected function GetColumnDescriptorArray (QAbstractSimpleTableDataColumn $objColumn) {
+			$rowArray = null; // signifies do the default thing for this column
+			$strId = $this->GetColumnIdentifier($objColumn);
+			if ($this->blnUseMData) {
+				$rowArray['mData'] = $strId;
+			}
+			return $rowArray;
 		}
 
 		public function __get($strName) {
@@ -284,12 +370,30 @@
 					return ($this->objDataSource = $mixValue);
 					
 				case 'UseAjax':
-					$this->blnUseAjax = QType::Cast ($mixValue, QType::Boolean);
-					if ($this->blnUseAjax) {	
-						$this->SetupAjaxBinding();
+					try {
+						$this->blnUseAjax = QType::Cast ($mixValue, QType::Boolean);
+						if ($this->blnUseAjax) {	
+							$this->SetupAjaxBinding();
+						}
+					} catch (QInvalidCastException $objExc) {
+						$objExc->IncrementOffset();
+						throw $objExc;
 					}
 					// TODO: turn off ajax binding if false
 					break;
+					
+				case 'UseMData':
+					try {
+						$this->blnUseMData = QType::Cast ($mixValue, QType::Boolean);
+						if ($this->blnUseMData) {	
+							$this->SetupColumnDescriptions();
+						}
+					} catch (QInvalidCastException $objExc) {
+						$objExc->IncrementOffset();
+						throw $objExc;
+					}
+					break;
+					
 
 				default:
 					try {
