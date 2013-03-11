@@ -1,4 +1,9 @@
 <?php
+/**
+ * QDataTableBase.class.php
+ * See QDataTable.class.php for general usage documentation.
+ *
+ */
 
 	class QDataTable_RowClickEvent extends QEvent {
 		const EventName = 'QDataTable_RowClickEvent';
@@ -16,8 +21,10 @@
 	 * @property int $TotalItemCount
 	 * @property boolean $FilterOnReturn
 	 * @property int $FilteringDelay
-	 * @property array $FixedColumns Array of options for fixed column plugin.
-	 * 	Can be the following:
+	 * @property array $FixedColumns Array of options for fixed column plugin. FixedColumns gives you
+	 *  a way to do something very similar to Freeze Panes in Excel. If you are only freezing the 
+	 *  headers, datatables recommends using the FixedHeaders plugin instead.
+	 * 	Can contain the following key/value pairs:
 	 * 		iLeftColumns=>number of left side columns to fix (1 is default)
 	 * 		iRightColumns=>number of right side columns to fix (0 is default)
 	 * 		sLeftWidth=>"fixed"|"relative" the algorithm used to compute width of left column
